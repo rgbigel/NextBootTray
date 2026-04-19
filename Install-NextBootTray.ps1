@@ -1,12 +1,12 @@
 <#
     Install-NextBootTray.ps1
-    Version: 1.0.1
+    Version: 2.0.0
 
     PURPOSE:
       - Copy all verified NextBootTray sources from the repository
         into the runtime folder D:\OneDrive\cmd.
       - Preserve deterministic structure and ASCII encoding.
-      - Never modify PATH or registry beyond protocol handlers.
+    - Never modify PATH.
       - Safe to re-run; overwrites existing files cleanly.
 
     REQUIREMENTS:
@@ -17,7 +17,7 @@
 
 $RepoRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Path $MyInvocation.MyCommand.Path -Parent }
 $Target   = "D:\OneDrive\cmd"
-Write-Host "Installing NextBootTray v1.0.1..."
+Write-Host "Installing NextBootTray v2.0.0..."
 Write-Host "Source: $RepoRoot"
 Write-Host "Target: $Target"
 
