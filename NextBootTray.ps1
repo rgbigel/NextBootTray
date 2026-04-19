@@ -200,14 +200,18 @@ function Get-BcdSections {
     # Keep stderr in-band so localized errors can be detected.
     $raw = bcdedit /enum all 2>&1
     if (-not $raw) {
+        Write-DebugMessage "Get-BcdSections: bcdedit returned empty"
         return @()
     }
 
     $rawText = ($raw | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
     if ($rawText -match '(?i)access is denied|zugriff verweigert') {
         Write-UserMessage "BCD could not be read. Start tray as Administrator."
+        Write-DebugMessage "Get-BcdSections: access denied from bcdedit"
         return @()
     }
+
+    Write-DebugMessage ("Get-BcdSections: bcdedit returned {0} lines" -f $raw.Count)
 
     $sections = @()
     $current  = @()
@@ -228,6 +232,7 @@ function Get-BcdSections {
         $sections += ,@($current)
     }
 
+    Write-DebugMessage ("Get-BcdSections: parsed into {0} sections" -f $sections.Count)
     return $sections
 }
 
@@ -300,11 +305,17 @@ function Classify-BcdSection {
 
 function Get-BootEntries {
     # Parse and classify BCD sections at click time so data is fresh.
+    Write-DebugMessage "Get-BootEntries: starting BCD collection"
+    
+    $sections = Get-BcdSections
+    Write-DebugMessage ("Get-BootEntries: got {0} BCD sections" -f $sections.Count)
+    
     $entries = @()
-    foreach ($section in (Get-BcdSections)) {
+    foreach ($section in $sections) {
         $entry = Classify-BcdSection -Section $section
         if ($entry) {
             $entries += $entry
+            Write-DebugMessage ("Classified entry: {0} ({1})" -f $entry.Description, $entry.Type)
         }
     }
 
@@ -322,8 +333,13 @@ function Show-BootToast {
         Keeping button count small improves compatibility and avoids
         silent action suppression on some Windows configurations.
     #>
+    Write-DebugMessage "Show-BootToast: starting"
+    
     $entries = Get-BootEntries
+    Write-DebugMessage ("Show-BootToast: got {0} entries" -f $entries.Count)
+    
     if ($entries.Count -eq 0) {
+        Write-DebugMessage "Show-BootToast: no entries, showing error message"
         New-BurntToastNotification -Text "NextBootTray", "No supported boot entries detected."
         return
     }
