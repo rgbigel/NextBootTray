@@ -410,6 +410,14 @@ $notifyIcon.Add_MouseClick({
 # ---------------------------------------------------------------
 # Main message loop + cleanup
 # ---------------------------------------------------------------
+
+# Diagnostic test mode: show boot toast immediately for testing BCD parsing
+if ($D) {
+    Write-DebugMessage "Debug mode: triggering Show-BootToast immediately for diagnostics"
+    Show-BootToast
+    Start-Sleep -Milliseconds 500
+}
+
 try {
     [System.Windows.Forms.Application]::Run()
 }
