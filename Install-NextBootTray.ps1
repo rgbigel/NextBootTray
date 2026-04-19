@@ -1,6 +1,6 @@
 <#
     Install-NextBootTray.ps1
-    Version: 1.0.0
+$11.0.1
 
     PURPOSE:
       - Copy all verified NextBootTray sources from the repository
@@ -17,8 +17,7 @@
 
 $RepoRoot = "D:\OneDrive\Git_Repositories\PS\NextBoot"
 $Target   = "D:\OneDrive\cmd"
-
-Write-Host "Installing NextBootTray v1.0.0..."
+$11.0.1..."
 Write-Host "Source: $RepoRoot"
 Write-Host "Target: $Target"
 

@@ -1,6 +1,6 @@
 @echo off
 setlocal
-rem NextBootTray.cmd v1.0.0
+$11.0.1
 set SHOWCONSOLE=0
 for %%A in (%*) do ( if /I "%%A"=="-D" set SHOWCONSOLE=1 )
 set SCRIPT=D:\OneDrive\cmd\NextBootTray.ps1

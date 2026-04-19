@@ -1,5 +1,5 @@
 <#
-    NextBootTray.ps1 v1.0.0
+$11.0.1
     Initializes tray icon, parses BCD, shows BurntToast buttons per GUID.
     No reboot until user clicks "Boot now".
 #>
