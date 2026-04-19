@@ -104,16 +104,27 @@ $BootNowScript    = Join-Path -Path $BasePath -ChildPath "NextBoot-BootNow.ps1"
 
 # Single-instance lock to avoid duplicate tray icons and ghost behavior.
 $mutexName = "Global\NextBootTray.SingleInstance"
+
+if ($Force) {
+    # -Force releases any stuck mutex from previous sessions.
+    try {
+        $stuckMutex = [System.Threading.Mutex]::OpenExisting($mutexName)
+        $stuckMutex.ReleaseMutex()
+        $stuckMutex.Dispose()
+        Write-DebugMessage "Released stuck mutex from previous session."
+    }
+    catch {
+        # Mutex doesn't exist or can't be opened—normal case.
+        Write-DebugMessage "No stuck mutex found."
+    }
+}
+
 $createdNew = $false
 $singleInstanceMutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$createdNew)
 
 if (-not $createdNew -and -not $Force) {
     Write-UserMessage "NextBootTray is already running. Use NextBootTray.cmd -STOP to force shutdown."
     exit 0
-}
-
-if (-not $createdNew -and $Force) {
-    Write-DebugMessage "Mutex already held; -Force bypasses single-instance check for testing."
 }
 
 # ---------------------------------------------------------------
