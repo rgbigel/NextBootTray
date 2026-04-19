@@ -57,28 +57,28 @@ function Set-VersionInFile {
 $files = @(
     @{
         Path        = (Join-Path $RepoRoot 'README.md')
-        Pattern     = '(?m)^(#\s+NextBootTray\s+v)\d+\.\d+\.\d+(\s*)$'
-        Replacement = ('$1' + $Version + '$2')
+        Pattern     = '(?m)^(#\s+NextBootTray\s+(?:v|Version\s+))\d+\.\d+\.\d+(\s*)$'
+        Replacement = ('${1}' + $Version + '${2}')
     },
     @{
         Path        = (Join-Path $RepoRoot 'NextBootTray.ps1')
         Pattern     = '(?m)^(\s*NextBootTray\.ps1\s+v)\d+\.\d+\.\d+(\s*)$'
-        Replacement = ('$1' + $Version + '$2')
+        Replacement = ('${1}' + $Version + '${2}')
     },
     @{
         Path        = (Join-Path $RepoRoot 'NextBootTray.cmd')
         Pattern     = '(?m)^(rem\s+NextBootTray\.cmd\s+v)\d+\.\d+\.\d+(\s*)$'
-        Replacement = ('$1' + $Version + '$2')
+        Replacement = ('${1}' + $Version + '${2}')
     },
     @{
         Path        = (Join-Path $RepoRoot 'Install-NextBootTray.ps1')
         Pattern     = '(?m)^(\s*Version:\s+)\d+\.\d+\.\d+(\s*)$'
-        Replacement = ('$1' + $Version + '$2')
+        Replacement = ('${1}' + $Version + '${2}')
     },
     @{
         Path        = (Join-Path $RepoRoot 'Install-NextBootTray.ps1')
         Pattern     = '(?m)^(\s*Write-Host\s+"Installing\s+NextBootTray\s+v)\d+\.\d+\.\d+(\.\.\.")\s*$'
-        Replacement = ('$1' + $Version + '$2')
+        Replacement = ('${1}' + $Version + '${2}')
     }
 )
 

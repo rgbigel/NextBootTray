@@ -1,4 +1,4 @@
-$11.0.1
+# NextBootTray Version 1.0.1
 
 ![NextBootTray Flow Chart](Docs/NextBootTray-Flow.png)
 
