@@ -12,10 +12,10 @@
     REQUIREMENTS:
       - PowerShell 7+
       - Write access to D:\OneDrive\cmd
-      - Repository located at D:\OneDrive\Git_Repositories\PS\NextBoot
+            - Run from within the NextBootTray repository
 #>
 
-$RepoRoot = "D:\OneDrive\Git_Repositories\PS\NextBoot"
+$RepoRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Path $MyInvocation.MyCommand.Path -Parent }
 $Target   = "D:\OneDrive\cmd"
 Write-Host "Installing NextBootTray v1.0.1..."
 Write-Host "Source: $RepoRoot"
