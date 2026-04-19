@@ -16,7 +16,8 @@
 
 param(
     [switch]$D,
-    [switch]$Stop
+    [switch]$Stop,
+    [switch]$Force
 )
 
 # ---------------------------------------------------------------
@@ -106,9 +107,13 @@ $mutexName = "Global\NextBootTray.SingleInstance"
 $createdNew = $false
 $singleInstanceMutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$createdNew)
 
-if (-not $createdNew) {
+if (-not $createdNew -and -not $Force) {
     Write-UserMessage "NextBootTray is already running. Use NextBootTray.cmd -STOP to force shutdown."
     exit 0
+}
+
+if (-not $createdNew -and $Force) {
+    Write-DebugMessage "Mutex already held; -Force bypasses single-instance check for testing."
 }
 
 # ---------------------------------------------------------------
@@ -221,16 +226,21 @@ function Classify-BcdSection {
     }
 
     $text = [string]::Join([Environment]::NewLine, $Section)
-    $idMatch = [regex]::Match($text, '(?im)^\s*(identifier|bezeichner)\s+(\{[0-9a-fA-F\-]+\})\s*$')
-    if (-not $idMatch.Success) {
+    
+    # Simple GUID extraction (not bound to "identifier" label).
+    $guidMatch = [regex]::Match($text, '\{[0-9a-fA-F\-]{36}\}')
+    if (-not $guidMatch.Success) {
+        Write-DebugMessage (\"Rejected: no GUID in section starting with '{0}'\" -f $Section[0].Substring(0, [Math]::Min(50, $Section[0].Length)))
         return $null
     }
 
-    $identifier = $idMatch.Groups[2].Value
+    $identifier = $guidMatch.Value
     $description = $null
-    $descMatch = [regex]::Match($text, '(?im)^\s*(description|beschreibung)\s+(.+)$')
-    if ($descMatch.Success) {
-        $description = $descMatch.Groups[2].Value.Trim()
+    
+    # Extract description line more flexibly.
+    $descLine = $Section | Where-Object { $_ -match '(?i)^\s*(description|beschreibung)\s+' }
+    if ($descLine) {
+        $description = ($descLine -replace '(?i)^\s*(description|beschreibung)\s+', '').Trim()
     }
 
     # Detection rules intentionally broad to survive localization.
@@ -266,6 +276,8 @@ function Classify-BcdSection {
         }
     }
 
+    # Unclassified entry (log for diagnostics).
+    Write-DebugMessage (\"Unclassified entry: {0} {1}\" -f $identifier, $description)
     return $null
 }
 
