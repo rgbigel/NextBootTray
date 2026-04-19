@@ -28,7 +28,12 @@ function Write-DebugMessage {
     param([string]$Message)
     if ($D) {
         $timestamp = (Get-Date).ToString("HH:mm:ss.fff")
-        Write-Host "[DBG $timestamp] $Message"
+        $entry = "[DBG $timestamp] $Message"
+        Write-Host $entry
+        
+        # Also log to file for capturing diagnostics when GUI loop is active.
+        $logFile = "$PSScriptRoot\NextBootTray-Debug.log"
+        Add-Content -Path $logFile -Value $entry -ErrorAction SilentlyContinue
     }
 }
 
@@ -78,6 +83,14 @@ function Stop-RunningTrayInstances {
 }
 
 Write-DebugMessage "=== NextBootTray.ps1 starting ==="
+
+# Clear old debug log at startup when -D is specified
+if ($D) {
+    $logFile = "$PSScriptRoot\NextBootTray-Debug.log"
+    if (Test-Path $logFile) {
+        Clear-Content -Path $logFile -ErrorAction SilentlyContinue
+    }
+}
 
 # Emergency control path used by launcher -STOP switch.
 if ($Stop) {
