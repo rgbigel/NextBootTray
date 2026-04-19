@@ -1,184 +1,151 @@
 <#
     NextBootTray.ps1 v1.0.1
-    Initializes tray icon, parses BCD, shows BurntToast buttons per GUID.
-    No reboot until user clicks "Boot now".
 
-    Purpose:
-    - Create a Windows tray icon for quick boot-target inspection and control.
-    - Read BCD via "bcdedit /enum all" and classify:
-        * Windows boot loaders (winload.efi, non-Recovery, non-WinPE)
-        * Ubuntu entries
-        * rEFInd entries
-    - On tray left-click, show a BurntToast notification with:
-        * List of detected entries
-        * Buttons that:
-            - Set default boot entry
-            - Boot a specific entry once and reboot immediately
+    PURPOSE:
+      - Provide a tray icon for quick boot-target actions.
+      - Show BurntToast notifications with buttons for:
+          * Set default boot target
+          * Boot once and reboot immediately
+      - Keep protocol actions inactive until explicit user click.
 
-    Design goals:
-    - Deterministic, ASCII-only, no hidden Unicode.
-    - Explicit diagnostics controlled by -D switch.
-    - No silent failures: every early exit is explained in diagnostics.
-    - No global PATH pollution; script is self-contained.
+    RUNTIME NOTES:
+      - Use -D for diagnostics in console output.
+      - Use -Stop to terminate all running NextBootTray instances
+        for the current user (emergency stop path).
 #>
 
 param(
-    [switch]$D
+    [switch]$D,
+    [switch]$Stop
 )
 
 # ---------------------------------------------------------------
-# Diagnostic helper
+# Logging helpers
 # ---------------------------------------------------------------
 function Write-DebugMessage {
-    param(
-        [string]$Message
-    )
-
+    # Diagnostic output is opt-in to keep normal startup silent.
+    param([string]$Message)
     if ($D) {
         $timestamp = (Get-Date).ToString("HH:mm:ss.fff")
         Write-Host "[DBG $timestamp] $Message"
     }
 }
 
-Write-DebugMessage "=== NextBootTray.ps1 v1.0.1 starting ==="
-Write-DebugMessage "PSVersion: $($PSVersionTable.PSVersion.ToString())"
+function Write-UserMessage {
+    # User-facing messages are concise and prefixed for clarity.
+    param([string]$Message)
+    Write-Host "[NextBootTray] $Message"
+}
 
 # ---------------------------------------------------------------
-# Resolve paths
+# Process discovery and emergency stop helpers
+# ---------------------------------------------------------------
+function Get-RunningTrayProcesses {
+    <#
+        Detects running PowerShell processes that include this script
+        in their command line so we can reliably stop orphaned runs.
+    #>
+    param([int]$ExcludePid = -1)
+
+    $escaped = [regex]::Escape("NextBootTray.ps1")
+    $processes = Get-CimInstance Win32_Process -Filter "Name='pwsh.exe' OR Name='powershell.exe'"
+    $matches = $processes | Where-Object {
+        $_.CommandLine -and $_.CommandLine -match $escaped -and $_.ProcessId -ne $ExcludePid
+    }
+
+    return @($matches)
+}
+
+function Stop-RunningTrayInstances {
+    # Returns number of instances successfully terminated.
+    param([int]$ExcludePid = -1)
+
+    $targets = Get-RunningTrayProcesses -ExcludePid $ExcludePid
+    $stopped = 0
+
+    foreach ($p in $targets) {
+        try {
+            Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop
+            $stopped++
+        }
+        catch {
+            Write-DebugMessage "Failed to stop PID $($p.ProcessId): $($_.Exception.Message)"
+        }
+    }
+
+    return $stopped
+}
+
+Write-DebugMessage "=== NextBootTray.ps1 starting ==="
+
+# Emergency control path used by launcher -STOP switch.
+if ($Stop) {
+    $count = Stop-RunningTrayInstances -ExcludePid $PID
+    if ($count -gt 0) {
+        Write-UserMessage "Stopped $count running NextBootTray instance(s)."
+    }
+    else {
+        Write-UserMessage "No running NextBootTray instance found."
+    }
+    exit 0
+}
+
+# ---------------------------------------------------------------
+# Resolve runtime paths
 # ---------------------------------------------------------------
 $ScriptPath = $MyInvocation.MyCommand.Path
 $BasePath   = Split-Path -Path $ScriptPath -Parent
 $IconPath   = Join-Path -Path $BasePath -ChildPath "NextBootTray.ico"
 
+# Helper scripts are invoked indirectly via protocol URL handlers.
 $SetDefaultScript = Join-Path -Path $BasePath -ChildPath "NextBoot-SetDefault.ps1"
 $BootNowScript    = Join-Path -Path $BasePath -ChildPath "NextBoot-BootNow.ps1"
 
-Write-DebugMessage "Script path: $ScriptPath"
-Write-DebugMessage "Base path:   $BasePath"
-Write-DebugMessage "Icon path:   $IconPath"
-Write-DebugMessage "SetDefault script: $SetDefaultScript"
-Write-DebugMessage "BootNow script:    $BootNowScript"
+# Single-instance lock to avoid duplicate tray icons and ghost behavior.
+$mutexName = "Global\NextBootTray.SingleInstance"
+$createdNew = $false
+$singleInstanceMutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$createdNew)
 
-# ---------------------------------------------------------------
-# Ensure base directory exists
-# ---------------------------------------------------------------
-if (-not (Test-Path -LiteralPath $BasePath)) {
-    Write-DebugMessage "Base path does not exist, creating: $BasePath"
-    New-Item -ItemType Directory -Path $BasePath -Force | Out-Null
-}
-else {
-    Write-DebugMessage "Base path exists."
+if (-not $createdNew) {
+    Write-UserMessage "NextBootTray is already running. Use NextBootTray.cmd -STOP to force shutdown."
+    exit 0
 }
 
 # ---------------------------------------------------------------
-# Import BurntToast
+# Load dependencies (BurntToast + WinForms)
 # ---------------------------------------------------------------
 try {
-    Write-DebugMessage "Importing BurntToast..."
     Import-Module BurntToast -ErrorAction Stop
-    Write-DebugMessage "BurntToast imported."
-}
-catch {
-    Write-DebugMessage "Failed to import BurntToast: $($_.Exception.Message)"
-    throw
-}
-
-# ---------------------------------------------------------------
-# Load WinForms and Drawing
-# ---------------------------------------------------------------
-try {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
-    Write-DebugMessage "WinForms and Drawing loaded."
 }
 catch {
-    Write-DebugMessage "Failed to load WinForms/Drawing: $($_.Exception.Message)"
-    throw
+    Write-UserMessage "Startup failed: required components could not be loaded."
+    Write-UserMessage "Details: $($_.Exception.Message)"
+    if ($singleInstanceMutex) {
+        $singleInstanceMutex.ReleaseMutex() | Out-Null
+        $singleInstanceMutex.Dispose()
+    }
+    exit 1
 }
 
 # ---------------------------------------------------------------
-# Build helper scripts
-# ---------------------------------------------------------------
-function Write-HelperScripts {
-    <#
-        Writes two helper scripts:
-
-        NextBoot-SetDefault.ps1
-        - Sets the default boot entry to the given identifier.
-        - Does NOT reboot by itself; reboot is handled by BootNow
-          or by the user.
-
-        NextBoot-BootNow.ps1
-        - Sets a one-time boot sequence to the given identifier.
-        - Immediately triggers a reboot.
-
-        Both scripts are designed to be called via custom URL
-        protocols: setdefault: and bootnow:
-    #>
-
-    Write-DebugMessage "Building helper scripts..."
-
-    $setDefaultContent = @'
-param(
-    [Parameter(Mandatory = $true)]
-    [string]$Id
-)
-
-# NextBoot-SetDefault.ps1
-# Sets the default boot entry to the given identifier.
-
-Write-Host "NextBoot-SetDefault.ps1: setting default to $Id"
-bcdedit /default $Id
-'@
-
-    $bootNowContent = @'
-param(
-    [Parameter(Mandatory = $true)]
-    [string]$Id
-)
-
-# NextBoot-BootNow.ps1
-# Sets a one-time boot sequence and reboots immediately.
-
-Write-Host "NextBoot-BootNow.ps1: booting once to $Id"
-bcdedit /bootsequence $Id
-shutdown /r /t 0
-'@
-
-    Set-Content -LiteralPath $SetDefaultScript -Value $setDefaultContent -Encoding ASCII
-    Set-Content -LiteralPath $BootNowScript    -Value $bootNowContent    -Encoding ASCII
-
-    Write-DebugMessage "Helper scripts written."
-}
-
-Write-HelperScripts
-
-# ---------------------------------------------------------------
-# Register custom URL protocols
+# Register custom protocol handlers used by BurntToast buttons
 # ---------------------------------------------------------------
 function Register-Protocol {
     param(
         [string]$Name,
-        [string]$ScriptPath
+        [string]$TargetScript
     )
 
-    <#
-        Registers a custom URL protocol under HKCU\Software\Classes:
-
-        Name: setdefault or bootnow
-
-        Example:
-        setdefault:{GUID}
-        bootnow:{GUID}
-
-        The command will call pwsh.exe with the helper script and
-        pass the full URL as %1, which the script interprets as Id.
-    #>
+    # Never register a broken protocol target.
+    if (-not (Test-Path -LiteralPath $TargetScript)) {
+        Write-UserMessage "Protocol setup skipped: missing helper script $TargetScript"
+        return
+    }
 
     $keyPath = "HKCU:\Software\Classes\$Name"
     $commandKey = Join-Path $keyPath "shell\open\command"
-
-    Write-DebugMessage "Registering protocol: $Name"
 
     if (-not (Test-Path -LiteralPath $keyPath)) {
         New-Item -Path $keyPath -Force | Out-Null
@@ -190,237 +157,239 @@ function Register-Protocol {
         New-Item -Path $commandKey -Force | Out-Null
     }
 
-    # Command line: pwsh.exe -NoProfile -WindowStyle Hidden -File "ScriptPath" "%1"
-    $cmd = "pwsh.exe -NoProfile -WindowStyle Hidden -File `"$ScriptPath`" `"%1`""
+    # %1 is the full protocol URI from toast button click.
+    $cmd = "pwsh.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$TargetScript`" -Uri `"%1`""
+    Set-ItemProperty -Path $commandKey -Name "(default)" -Value $cmd -Force
 
-    New-ItemProperty -Path $commandKey -Name "(default)" -Value $cmd -PropertyType String -Force | Out-Null
-
-    Write-DebugMessage "Protocol $Name registered."
+    Write-DebugMessage "Protocol registered: $Name"
 }
 
-Register-Protocol -Name "setdefault" -ScriptPath $SetDefaultScript
-Register-Protocol -Name "bootnow"    -ScriptPath $BootNowScript
+Register-Protocol -Name "setdefault" -TargetScript $SetDefaultScript
+Register-Protocol -Name "bootnow" -TargetScript $BootNowScript
 
 # ---------------------------------------------------------------
-# Create tray icon
-# ---------------------------------------------------------------
-$notifyIcon = New-Object System.Windows.Forms.NotifyIcon
-
-try {
-    if (Test-Path -LiteralPath $IconPath) {
-        $iconObject = New-Object System.Drawing.Icon($IconPath)
-        $notifyIcon.Icon = $iconObject
-        Write-DebugMessage "Custom icon loaded from $IconPath."
-    }
-    else {
-        Write-DebugMessage "Icon file not found at $IconPath. Using default icon."
-    }
-}
-catch {
-    Write-DebugMessage "Failed to load icon: $($_.Exception.Message)"
-}
-
-$notifyIcon.Visible = $true
-$notifyIcon.Text    = "NextBootTray"
-
-# ---------------------------------------------------------------
-# BCD parsing
+# BCD read and parsing helpers
 # ---------------------------------------------------------------
 function Get-BcdSections {
     <#
-        Runs "bcdedit /enum all" and splits the output into sections
-        separated by blank lines. Each section is an array of lines.
+        Retrieves full BCD dump and splits it into logical sections.
+        Returns empty set for non-admin / inaccessible environments.
     #>
-
-    Write-DebugMessage "Calling bcdedit /enum all..."
+    # Keep stderr in-band so localized errors can be detected.
     $raw = bcdedit /enum all 2>&1
     if (-not $raw) {
-        Write-DebugMessage "bcdedit returned no output."
         return @()
     }
 
-    Write-DebugMessage ("bcdedit returned {0} lines." -f $raw.Count)
+    $rawText = ($raw | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+    if ($rawText -match '(?i)access is denied|zugriff verweigert') {
+        Write-UserMessage "BCD could not be read. Start tray as Administrator."
+        return @()
+    }
 
     $sections = @()
     $current  = @()
 
     foreach ($line in $raw) {
-        if ([string]::IsNullOrWhiteSpace($line)) {
+        $lineText = $line.ToString()
+        if ([string]::IsNullOrWhiteSpace($lineText)) {
             if ($current.Count -gt 0) {
                 $sections += ,@($current)
                 $current = @()
             }
+            continue
         }
-        else {
-            $current += $line
-        }
+        $current += $lineText
     }
 
     if ($current.Count -gt 0) {
         $sections += ,@($current)
     }
 
-    Write-DebugMessage ("Parsed {0} sections from BCD output." -f $sections.Count)
     return $sections
 }
 
 function Classify-BcdSection {
     <#
-        Classifies a single BCD section into:
-        - Windows  : real Windows boot loader (winload.efi, not Recovery/WinPE)
-        - Linux    : Ubuntu
-        - rEFInd   : rEFInd Boot Manager
-        - $null    : not relevant for tray display
+        Identifies target boot entries from a BCD section with locale-
+        tolerant matching (English/German labels where practical).
     #>
-
-    param(
-        [string[]]$Section
-    )
+    param([string[]]$Section)
 
     if (-not $Section -or $Section.Count -eq 0) {
         return $null
     }
 
-    $newline = [Environment]::NewLine
-    $text    = [string]::Join($newline, $Section)
+    $text = [string]::Join([Environment]::NewLine, $Section)
+    $idMatch = [regex]::Match($text, '(?im)^\s*(identifier|bezeichner)\s+(\{[0-9a-fA-F\-]+\})\s*$')
+    if (-not $idMatch.Success) {
+        return $null
+    }
 
-    # Extract description
+    $identifier = $idMatch.Groups[2].Value
     $description = $null
-    $descLine = $Section | Where-Object { $_ -match '^\s*description\s+' }
-    if ($descLine) {
-        $description = ($descLine -replace '^\s*description\s+', '').Trim()
+    $descMatch = [regex]::Match($text, '(?im)^\s*(description|beschreibung)\s+(.+)$')
+    if ($descMatch.Success) {
+        $description = $descMatch.Groups[2].Value.Trim()
     }
 
-    # Extract identifier
-    $identifier = $null
-    $idLine = $Section | Where-Object { $_ -match '^\s*identifier\s+' }
-    if ($idLine) {
-        $identifier = ($idLine -replace '^\s*identifier\s+', '').Trim()
-    }
+    # Detection rules intentionally broad to survive localization.
+    $isWinload = $text -match '(?i)\\windows\\system32\\winload\.efi'
+    $isRecovery = $text -match '(?i)(recovery|wiederherstellung)'
+    $isUbuntu = $text -match '(?i)\bubuntu\b'
+    $isRefind = $text -match '(?i)\brefind\b'
 
-    # Case-insensitive detection of winload.efi
-    $isWinload = $text -match '(?im)^\s*path\s+\\windows\\system32\\winload\.efi\s*$'
-
-    # Exclude WinRE / WinPE
-    $isRecovery = $false
-    $isWinPE    = $false
-
-    if ($description -and ($description -match '(?i)recovery')) {
-        $isRecovery = $true
-    }
-
-    if ($text -match '(?im)^\s*winpe\s+Yes\s*$') {
-        $isWinPE = $true
-    }
-
-    if ($isWinload -and -not $isRecovery -and -not $isWinPE) {
+    if ($isWinload -and -not $isRecovery) {
+        if (-not $description) { $description = "Windows" }
         return [PSCustomObject]@{
             Type        = "Windows"
             Description = $description
             Identifier  = $identifier
-            Raw         = $Section
         }
     }
 
-    # Ubuntu
-    if ($description -and ($description -match '(?i)ubuntu')) {
+    if ($isUbuntu) {
+        if (-not $description) { $description = "Ubuntu" }
         return [PSCustomObject]@{
             Type        = "Linux"
             Description = $description
             Identifier  = $identifier
-            Raw         = $Section
         }
     }
 
-    # rEFInd
-    if ($description -and ($description -match '(?i)refind')) {
+    if ($isRefind) {
+        if (-not $description) { $description = "rEFInd" }
         return [PSCustomObject]@{
             Type        = "rEFInd"
             Description = $description
             Identifier  = $identifier
-            Raw         = $Section
         }
     }
 
     return $null
 }
 
-Write-DebugMessage "Reading and classifying BCD entries..."
-$sections  = Get-BcdSections
-$osEntries = @()
-
-foreach ($section in $sections) {
-    $classified = Classify-BcdSection -Section $section
-    if ($classified) {
-        Write-DebugMessage ("Detected OS entry: [{0}] {1}" -f $classified.Type, $classified.Description)
-        $osEntries += $classified
+function Get-BootEntries {
+    # Parse and classify BCD sections at click time so data is fresh.
+    $entries = @()
+    foreach ($section in (Get-BcdSections)) {
+        $entry = Classify-BcdSection -Section $section
+        if ($entry) {
+            $entries += $entry
+        }
     }
+
+    $entries = $entries | Group-Object Identifier | ForEach-Object { $_.Group[0] }
+    Write-DebugMessage ("Boot entries found: {0}" -f $entries.Count)
+    return @($entries)
 }
 
-Write-DebugMessage ("Final OS entry count: {0}" -f $osEntries.Count)
-
 # ---------------------------------------------------------------
-# Toast builder
+# Toast rendering
 # ---------------------------------------------------------------
 function Show-BootToast {
     <#
-        Builds and shows a BurntToast notification listing all
-        detected OS entries and providing buttons for:
-        - Set default (setdefault:{Id})
-        - Boot now (bootnow:{Id})
+        Renders compact toast text and up to five action buttons.
+        Keeping button count small improves compatibility and avoids
+        silent action suppression on some Windows configurations.
     #>
-
-    if ($osEntries.Count -eq 0) {
-        Write-DebugMessage "Show-BootToast: no OS entries, showing simple toast."
-        New-BurntToastNotification -Text "NextBootTray", "No boot entries detected."
+    $entries = Get-BootEntries
+    if ($entries.Count -eq 0) {
+        New-BurntToastNotification -Text "NextBootTray", "No supported boot entries detected."
         return
     }
 
-    $lines = @()
-    foreach ($entry in $osEntries) {
-        $lines += ("{0}: {1}" -f $entry.Type, $entry.Description)
+    # Preview text is capped to keep toast compact.
+    $preview = @()
+    foreach ($entry in ($entries | Select-Object -First 3)) {
+        $preview += ("{0}: {1}" -f $entry.Type, $entry.Description)
     }
 
-    $bodyText = [string]::Join([Environment]::NewLine, $lines)
+    if ($entries.Count -gt 3) {
+        $preview += ("+{0} more entries" -f ($entries.Count - 3))
+    }
 
+    # BurntToast supports up to five buttons.
     $buttons = @()
-
-    foreach ($entry in $osEntries) {
-        if (-not $entry.Identifier) {
-            continue
+    foreach ($entry in $entries) {
+        if ($buttons.Count -ge 5) {
+            break
         }
 
-        $id   = $entry.Identifier
-        $desc = $entry.Description
+        $shortName = $entry.Description
+        if ($shortName.Length -gt 24) {
+            $shortName = $shortName.Substring(0, 24)
+        }
 
-        # Set default button
-        $btnSet = New-BTButton -Content ("Set default: {0}" -f $desc) -Arguments ("setdefault:{0}" -f $id)
-        $buttons += $btnSet
+        # Keep arguments protocol-based so action only runs on click.
+        $buttons += New-BTButton -Content ("Set: {0}" -f $shortName) -Arguments ("setdefault:{0}" -f $entry.Identifier)
 
-        # Boot now button
-        $btnBoot = New-BTButton -Content ("Boot now: {0}" -f $desc) -Arguments ("bootnow:{0}" -f $id)
-        $buttons += $btnBoot
+        if ($buttons.Count -ge 5) {
+            break
+        }
+
+        $buttons += New-BTButton -Content ("Boot: {0}" -f $shortName) -Arguments ("bootnow:{0}" -f $entry.Identifier)
     }
 
-    Write-DebugMessage "Show-BootToast: showing toast with buttons."
-    New-BurntToastNotification -Text "NextBootTray", $bodyText -Button $buttons
+    if ($buttons.Count -eq 0) {
+        New-BurntToastNotification -Text "NextBootTray", "Entries found but no actionable GUIDs parsed."
+        return
+    }
+
+    try {
+        New-BurntToastNotification -Text "NextBootTray", ([string]::Join([Environment]::NewLine, $preview)) -Button $buttons
+    }
+    catch {
+        Write-UserMessage "Failed to render action toast."
+        Write-UserMessage "Details: $($_.Exception.Message)"
+    }
 }
 
 # ---------------------------------------------------------------
-# Tray click handler
+# Tray icon and context menu wiring
 # ---------------------------------------------------------------
-$notifyIcon.Add_Click({
-    param($sender, $eventArgs)
+$notifyIcon = New-Object System.Windows.Forms.NotifyIcon
+try {
+    # Missing icon is non-fatal; tray still works with default icon.
+    if (Test-Path -LiteralPath $IconPath) {
+        $notifyIcon.Icon = New-Object System.Drawing.Icon($IconPath)
+    }
+}
+catch {
+    Write-DebugMessage "Icon load failed: $($_.Exception.Message)"
+}
 
+$notifyIcon.Visible = $true
+$notifyIcon.Text = "NextBootTray"
+
+# Simple context menu for exit only (left-click is the primary action).
+$menu = New-Object System.Windows.Forms.ContextMenuStrip
+$itemExit = New-Object System.Windows.Forms.ToolStripMenuItem("Exit NextBootTray")
+$null = $menu.Items.Add($itemExit)
+$notifyIcon.ContextMenuStrip = $menu
+
+$itemExit.Add_Click({ [System.Windows.Forms.Application]::Exit() })
+
+# Left-click shortcut mirrors the menu action.
+$notifyIcon.Add_MouseClick({
+    param($sender, $eventArgs)
     if ($eventArgs.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
-        Write-DebugMessage "Tray left-click detected."
         Show-BootToast
     }
 })
 
-Write-DebugMessage "Entering WinForms message loop..."
-[System.Windows.Forms.Application]::Run()
+# ---------------------------------------------------------------
+# Main message loop + cleanup
+# ---------------------------------------------------------------
+try {
+    [System.Windows.Forms.Application]::Run()
+}
+finally {
+    $notifyIcon.Visible = $false
+    $notifyIcon.Dispose()
 
-Write-DebugMessage "Message loop exited. Cleaning up tray icon."
-$notifyIcon.Visible = $false
-$notifyIcon.Dispose()
+    if ($singleInstanceMutex) {
+        try { $singleInstanceMutex.ReleaseMutex() | Out-Null } catch {}
+        $singleInstanceMutex.Dispose()
+    }
+}

@@ -62,5 +62,23 @@ if (Test-Path $DocsSrc) {
     Write-Host "Copied documentation."
 }
 
+# Register user logon startup entry
+try {
+    $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    $runName = "NextBootTray"
+    $runValue = '"D:\OneDrive\cmd\NextBootTray.cmd"'
+
+    if (-not (Test-Path -LiteralPath $runKey)) {
+        New-Item -Path $runKey -Force | Out-Null
+    }
+
+    New-ItemProperty -Path $runKey -Name $runName -Value $runValue -PropertyType String -Force | Out-Null
+    Write-Host "Configured logon startup entry: HKCU Run -> NextBootTray"
+}
+catch {
+    Write-Warning "Could not configure logon startup entry."
+    Write-Warning "Reason: $($_.Exception.Message)"
+}
+
 Write-Host "Installation complete."
 Write-Host "NextBootTray is now ready in D:\OneDrive\cmd."
