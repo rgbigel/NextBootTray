@@ -103,20 +103,13 @@ $SetDefaultScript = Join-Path -Path $BasePath -ChildPath "NextBoot-SetDefault.ps
 $BootNowScript    = Join-Path -Path $BasePath -ChildPath "NextBoot-BootNow.ps1"
 
 # Single-instance lock to avoid duplicate tray icons and ghost behavior.
-$mutexName = "Global\NextBootTray.SingleInstance"
-
+# When -Force is used, use a session-specific mutex name to bypass stuck global locks.
 if ($Force) {
-    # -Force releases any stuck mutex from previous sessions.
-    try {
-        $stuckMutex = [System.Threading.Mutex]::OpenExisting($mutexName)
-        $stuckMutex.ReleaseMutex()
-        $stuckMutex.Dispose()
-        Write-DebugMessage "Released stuck mutex from previous session."
-    }
-    catch {
-        # Mutex doesn't exist or can't be opened—normal case.
-        Write-DebugMessage "No stuck mutex found."
-    }
+    $mutexName = "Global\NextBootTray.Force.$PID"
+    Write-DebugMessage "Using session-specific mutex: $mutexName"
+}
+else {
+    $mutexName = "Global\NextBootTray.SingleInstance"
 }
 
 $createdNew = $false
