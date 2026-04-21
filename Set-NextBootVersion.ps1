@@ -62,7 +62,17 @@ $files = @(
     },
     @{
         Path        = (Join-Path $RepoRoot 'NextBootTray.ps1')
-        Pattern     = '(?m)^(\s*NextBootTray\.ps1\s+v)\d+\.\d+\.\d+(\s*)$'
+        Pattern     = '(?m)^(#\s+Version:\s+)\d+\.\d+\.\d+(\s*)$'
+        Replacement = ('${1}' + $Version + '${2}')
+    },
+    @{
+        Path        = (Join-Path $RepoRoot 'NextBoot-BootNow.ps1')
+        Pattern     = '(?m)^(#\s+Version:\s+)\d+\.\d+\.\d+(\s*)$'
+        Replacement = ('${1}' + $Version + '${2}')
+    },
+    @{
+        Path        = (Join-Path $RepoRoot 'NextBoot-SetDefault.ps1')
+        Pattern     = '(?m)^(#\s+Version:\s+)\d+\.\d+\.\d+(\s*)$'
         Replacement = ('${1}' + $Version + '${2}')
     },
     @{

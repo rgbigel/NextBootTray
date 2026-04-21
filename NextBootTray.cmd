@@ -2,11 +2,11 @@
 setlocal
 
 rem ============================================================
-rem NextBootTray.cmd
+rem NextBootTray.cmd v3.0.0
 rem Wrapper for NextBootTray.ps1
-rem Version: 2.0.0
+rem Version: 3.0.0
 rem
-rem - Forces elevation via Start-Process -Verb RunAs
+rem - Normal startup uses scheduled task for non-interactive elevated launch
 rem - Runs hidden by default (only tray icon visible)
 rem - If -D is passed, shows a console with diagnostics
 rem - If -STOP is passed, terminates running tray instances
@@ -41,9 +41,13 @@ if %SHOWCONSOLE%==1 (
 )
 
 rem ------------------------------------------------------------
-rem No -D: hidden window + elevation
+rem No -D: run elevated scheduled task without UAC prompt
 rem ------------------------------------------------------------
-powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ^
-    "Start-Process pwsh.exe -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile','-STA','%SCRIPT%'"
+schtasks /Run /TN "NextBootTray-LogonElevated" >nul 2>&1
+if errorlevel 1 (
+    rem Fallback path if task does not exist yet.
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ^
+        "Start-Process pwsh.exe -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile','-STA','%SCRIPT%'"
+)
 
 exit /b

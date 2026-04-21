@@ -1,6 +1,6 @@
 <#
     Install-NextBootTray.ps1
-    Version: 2.0.1
+    Version: 3.0.0
 
     PURPOSE:
       - Copy all verified NextBootTray sources from the repository
@@ -17,7 +17,7 @@
 
 $RepoRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Path $MyInvocation.MyCommand.Path -Parent }
 $Target   = "D:\OneDrive\cmd"
-Write-Host "Installing NextBootTray v2.0.1..."
+Write-Host "Installing NextBootTray v3.0.0..."
 Write-Host "Source: $RepoRoot"
 Write-Host "Target: $Target"
 
@@ -55,28 +55,26 @@ if (Test-Path $IconSrc) {
     Write-Warning "Icon file not found in repository."
 }
 
-# Copy documentation
-$DocsSrc = Join-Path $RepoRoot "Docs"
-if (Test-Path $DocsSrc) {
-    Copy-Item -Force -Recurse -Path $DocsSrc -Destination (Join-Path $Target "Docs")
-    Write-Host "Copied documentation."
-}
-
-# Register user logon startup entry
+# Register elevated logon startup task
 try {
+    $taskName = "NextBootTray-LogonElevated"
+    $currentUser = "{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME
+    $scriptPath = Join-Path -Path $Target -ChildPath "NextBootTray.ps1"
+
+    $action = New-ScheduledTaskAction -Execute "pwsh.exe" -Argument ("-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File `"{0}`"" -f $scriptPath)
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
+    $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Highest
+
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+    Write-Host "Configured logon scheduled task: $taskName"
+
     $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-    $runName = "NextBootTray"
-    $runValue = '"D:\OneDrive\cmd\NextBootTray.cmd"'
-
-    if (-not (Test-Path -LiteralPath $runKey)) {
-        New-Item -Path $runKey -Force | Out-Null
+    if (Test-Path -LiteralPath $runKey) {
+        Remove-ItemProperty -Path $runKey -Name "NextBootTray" -ErrorAction SilentlyContinue
     }
-
-    New-ItemProperty -Path $runKey -Name $runName -Value $runValue -PropertyType String -Force | Out-Null
-    Write-Host "Configured logon startup entry: HKCU Run -> NextBootTray"
 }
 catch {
-    Write-Warning "Could not configure logon startup entry."
+    Write-Warning "Could not configure scheduled task startup."
     Write-Warning "Reason: $($_.Exception.Message)"
 }
 

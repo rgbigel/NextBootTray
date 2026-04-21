@@ -1,17 +1,14 @@
-<#
-    NextBootTray.ps1 v2.0.1
-
-    PURPOSE:
-      - Provide a tray icon for quick boot-target actions.
-            - Left-click opens a boot-action menu.
-            - Right-click shows only "Exit NextBootTray".
-            - Allow setting default boot target and immediate reboot actions.
-
-    RUNTIME NOTES:
-      - Use -D for diagnostics in console output.
-      - Use -Stop to terminate all running NextBootTray instances
-        for the current user (emergency stop path).
-#>
+# =================================================================================================
+#  Module:      NextBootTray.ps1
+#  Path:        .
+#  Author:      Rolf Bercht
+#  Version:     3.0.0
+#  Changelog:
+#      3.0.0  - Added boot cache reuse, hibernation-entry classification/filtering, tools-page
+#               placeholder, structured logging with process snapshot, and defensive error guards.
+#      2.0.1  - Documentation and metadata update release.
+#      2.0.0  - Left/right click split menus and robust BCD classification baseline.
+# =================================================================================================
 
 param(
     [switch]$D,
@@ -21,26 +18,125 @@ param(
 )
 
 # ---------------------------------------------------------------
-# Logging helpers
+# Logging helpers and process state snapshot
 # ---------------------------------------------------------------
+$script:RunToken = (Get-Date).ToString("yyyyMMdd_HHmmss")
+$script:LogFile = Join-Path -Path $PSScriptRoot -ChildPath ("NextBootTray_{0}.log" -f $script:RunToken)
+$script:ProcessStateFile = Join-Path -Path $PSScriptRoot -ChildPath "NextBootTray-ProcessState.json"
+
+function Test-IsElevated {
+    try {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Write-LogEntry {
+    param(
+        [ValidateSet('DEBUG', 'INFO', 'WARN', 'ERROR')]
+        [string]$Level,
+        [string]$Message
+    )
+
+    $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss.fff")
+    $entry = "[{0}] [{1}] {2}" -f $timestamp, $Level, $Message
+
+    try {
+        Add-Content -Path $script:LogFile -Value $entry -ErrorAction Stop
+    }
+    catch {
+        # Logging must not crash runtime.
+    }
+
+    if ($D -or $Level -in @('WARN', 'ERROR')) {
+        Write-Host $entry
+    }
+}
+
+function Save-ProcessState {
+    try {
+        $state = [ordered]@{
+            Version       = '3.0.0'
+            TimestampUtc  = [DateTime]::UtcNow.ToString('o')
+            ComputerName  = $env:COMPUTERNAME
+            UserName      = $env:USERNAME
+            ProcessId     = $PID
+            Elevated      = (Test-IsElevated)
+            ScriptPath    = $MyInvocation.MyCommand.Path
+            Arguments     = @($MyInvocation.BoundParameters.Keys)
+            DebugMode     = [bool]$D
+        }
+
+        $json = $state | ConvertTo-Json -Depth 3
+        Set-Content -Path $script:ProcessStateFile -Value $json -Encoding ascii -ErrorAction Stop
+        Write-LogEntry -Level INFO -Message ("Process state snapshot written to {0}" -f $script:ProcessStateFile)
+    }
+    catch {
+        Write-LogEntry -Level ERROR -Message ("Failed to write process state snapshot: {0}" -f $_.Exception.Message)
+    }
+}
+
 function Write-DebugMessage {
-    # Diagnostic output is opt-in to keep normal startup silent.
     param([string]$Message)
     if ($D) {
-        $timestamp = (Get-Date).ToString("HH:mm:ss.fff")
-        $entry = "[DBG $timestamp] $Message"
-        Write-Host $entry
-        
-        # Also log to file for capturing diagnostics when GUI loop is active.
-        $logFile = "$PSScriptRoot\NextBootTray-Debug.log"
-        Add-Content -Path $logFile -Value $entry -ErrorAction SilentlyContinue
+        Write-LogEntry -Level DEBUG -Message $Message
     }
 }
 
 function Write-UserMessage {
-    # User-facing messages are concise and prefixed for clarity.
     param([string]$Message)
     Write-Host "[NextBootTray] $Message"
+    Write-LogEntry -Level INFO -Message $Message
+}
+
+function Restore-HibernateStateIfPending {
+    $statePath = Join-Path -Path $PSScriptRoot -ChildPath 'NextBootTray-HibernateState.json'
+    if (-not (Test-Path -LiteralPath $statePath)) {
+        return
+    }
+
+    try {
+        $raw = Get-Content -Path $statePath -Raw -ErrorAction Stop
+        $state = $raw | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        Write-LogEntry -Level ERROR -Message ("Failed to parse hibernation state file: {0}" -f $_.Exception.Message)
+        return
+    }
+
+    if ($state.ComputerName -ne $env:COMPUTERNAME) {
+        Write-LogEntry -Level WARN -Message ("Skipping hibernation restore for different machine: {0}" -f $state.ComputerName)
+        return
+    }
+
+    if (-not $state.PendingRestore) {
+        return
+    }
+
+    try {
+        if ($state.HibernateWasEnabled) {
+            powercfg /h on | Out-Null
+            Write-LogEntry -Level INFO -Message 'Restored hibernation state to enabled.'
+        }
+        else {
+            Write-LogEntry -Level INFO -Message 'No hibernation restore needed (previously disabled).'
+        }
+    }
+    catch {
+        Write-LogEntry -Level ERROR -Message ("Failed to restore hibernation setting: {0}" -f $_.Exception.Message)
+    }
+    finally {
+        try {
+            Remove-Item -Path $statePath -Force -ErrorAction Stop
+        }
+        catch {
+            Write-LogEntry -Level ERROR -Message ("Could not remove hibernation state file: {0}" -f $_.Exception.Message)
+        }
+    }
 }
 
 # ---------------------------------------------------------------
@@ -82,15 +178,9 @@ function Stop-RunningTrayInstances {
     return $stopped
 }
 
-Write-DebugMessage "=== NextBootTray.ps1 starting ==="
-
-# Clear old debug log at startup when -D is specified
-if ($D) {
-    $logFile = "$PSScriptRoot\NextBootTray-Debug.log"
-    if (Test-Path $logFile) {
-        Clear-Content -Path $logFile -ErrorAction SilentlyContinue
-    }
-}
+Write-LogEntry -Level INFO -Message "=== NextBootTray.ps1 starting ==="
+Save-ProcessState
+Restore-HibernateStateIfPending
 
 # Emergency control path used by launcher -STOP switch.
 if ($Stop) {
@@ -169,7 +259,13 @@ function Get-BcdSections {
         Returns empty set for non-admin / inaccessible environments.
     #>
     # Keep stderr in-band so localized errors can be detected.
-    $raw = bcdedit /enum all 2>&1
+    try {
+        $raw = bcdedit /enum all 2>&1
+    }
+    catch {
+        Write-LogEntry -Level ERROR -Message ("Get-BcdSections failed: {0}" -f $_.Exception.Message)
+        return @()
+    }
     if (-not $raw) {
         Write-DebugMessage "Get-BcdSections: bcdedit returned empty"
         return @()
@@ -238,6 +334,7 @@ function Classify-BcdSection {
 
     # Detection rules intentionally broad to survive localization.
     $isWinload = $text -match '(?i)\\windows\\system32\\winload\.(efi|exe)'
+    $isWinresume = $text -match '(?i)\\windows\\system32\\winresume\.(efi|exe)'
     # Scope exclusion check to the description only ? full-text matching would catch
     # 'recoverysequence' properties present in every normal Windows boot entry.
     # 'boot\s+manager' is checked as a phrase to avoid matching "rEFInd Boot Manager".
@@ -250,6 +347,15 @@ function Classify-BcdSection {
     $isLinuxDesc = $description -and $description -match '(?i)\b(ubuntu|linux|debian|fedora|arch|mint)\b'
     $isTooling = $description -and $description -match '(?i)(memory|diagnostic|tools|werkzeug|test)'
     $isRecoveryTool = $description -and $description -match '(?i)\b(aomei|macrium|reflect|pe)\b'
+
+    if ($isWinresume) {
+        if (-not $description) { $description = "Hibernation" }
+        return [PSCustomObject]@{
+            Type        = "Hibernation"
+            Description = $description
+            Identifier  = $identifier
+        }
+    }
 
     if (($isWinload -or $isWindowsDesc) -and -not $isExcluded) {
         if (-not $description) { $description = "Windows" }
@@ -323,7 +429,13 @@ function Get-BootEntries {
 
 function Get-BcdDefaultInfo {
     # Reads the active default boot target from bootmgr and resolves aliases.
-    $raw = bcdedit /enum '{bootmgr}' 2>&1
+    try {
+        $raw = bcdedit /enum '{bootmgr}' 2>&1
+    }
+    catch {
+        Write-LogEntry -Level ERROR -Message ("Get-BcdDefaultInfo bootmgr query failed: {0}" -f $_.Exception.Message)
+        return [PSCustomObject]@{ Identifier = $null; Description = $null }
+    }
     if (-not $raw) {
         return [PSCustomObject]@{ Identifier = $null; Description = $null }
     }
@@ -355,7 +467,13 @@ function Get-BcdDefaultInfo {
 
     $desc = $null
     $defaultIdFromDefault = $null
-    $defaultRaw = bcdedit /enum '{default}' 2>&1
+    try {
+        $defaultRaw = bcdedit /enum '{default}' 2>&1
+    }
+    catch {
+        Write-LogEntry -Level ERROR -Message ("Get-BcdDefaultInfo default query failed: {0}" -f $_.Exception.Message)
+        return [PSCustomObject]@{ Identifier = $resolvedId; Description = $null }
+    }
     $defaultText = ($defaultRaw | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
     $defaultIdMatch = [regex]::Match($defaultText, '(?im)^\s*(identifier|bezeichner)\s+(\{[0-9a-fA-F\-]+\})\s*$')
     if ($defaultIdMatch.Success) {
@@ -389,12 +507,19 @@ function Invoke-ActionScript {
         return
     }
 
-    Start-Process -FilePath "pwsh.exe" -WindowStyle Hidden -ArgumentList @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", $ScriptPath,
-        "-Id", $Id
-    ) | Out-Null
+    try {
+        Start-Process -FilePath "pwsh.exe" -WindowStyle Hidden -ArgumentList @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $ScriptPath,
+            "-Id", $Id
+        ) | Out-Null
+        Write-LogEntry -Level INFO -Message ("Invoked action script {0} with id {1}" -f $ScriptPath, $Id)
+    }
+    catch {
+        Write-UserMessage "Action failed: child process could not be started."
+        Write-LogEntry -Level ERROR -Message ("Invoke-ActionScript failed for {0}: {1}" -f $ScriptPath, $_.Exception.Message)
+    }
 }
 
 # ---------------------------------------------------------------
@@ -430,6 +555,7 @@ $script:CurrentDefaultId = $null
 $script:CurrentDefaultDescription = $null
 $script:BootCacheReady = $false
 $script:IsOpeningLeftMenu = $false
+$script:CurrentMenuPage = 'Boot'
 
 # Hidden owner form gives the menu a proper keyboard owner so Esc works.
 $menuOwner = New-Object System.Windows.Forms.Form
@@ -469,13 +595,38 @@ function Refresh-BootCache {
 
 function Build-LeftMenu {
     $leftMenu.Items.Clear()
-    # Refresh on open so checkmark/Boot-now always reflect latest BCD state.
-    Refresh-BootCache -Force
+
+    if ($script:CurrentMenuPage -eq 'Tools') {
+        $toolsTitle = New-Object System.Windows.Forms.ToolStripMenuItem('Tools (placeholder for item 5)')
+        $toolsTitle.Enabled = $false
+        $null = $leftMenu.Items.Add($toolsTitle)
+
+        $dummy = New-Object System.Windows.Forms.ToolStripMenuItem('Future tools page is not implemented yet')
+        $dummy.Enabled = $false
+        $null = $leftMenu.Items.Add($dummy)
+        $null = $leftMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+
+        $backItem = New-Object System.Windows.Forms.ToolStripMenuItem('Back to boot entries')
+        $backItem.Add_Click({
+            $script:CurrentMenuPage = 'Boot'
+            Build-LeftMenu
+            $menuOwner.Show()
+            [void][TrayFocus]::SetForegroundWindow($menuOwner.Handle)
+            $leftMenu.Show($menuOwner, $menuOwner.PointToClient([System.Windows.Forms.Cursor]::Position))
+        })
+        $null = $leftMenu.Items.Add($backItem)
+        return
+    }
+
+    # Reuse cached BCD data during repeated left-click interactions.
+    Refresh-BootCache
     $entries = @($script:CachedEntries)
 
     # Filter entries that serve infrastructure roles and are not user boot targets.
     $skipDescriptions = @('Windows Boot Manager', 'Windows-Start-Manager')
-    $entries = @($entries | Where-Object { $skipDescriptions -notcontains $_.Description })
+    $entries = @($entries | Where-Object {
+        $skipDescriptions -notcontains $_.Description -and $_.Type -ne 'Hibernation'
+    })
 
     if ($entries.Count -eq 0) {
         $noneItem = New-Object System.Windows.Forms.ToolStripMenuItem('No supported boot entries detected')
@@ -587,6 +738,17 @@ function Build-LeftMenu {
         $bootItem.Enabled = $false
         $null = $leftMenu.Items.Add($bootItem)
     }
+
+    $null = $leftMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+    $toolsItem = New-Object System.Windows.Forms.ToolStripMenuItem('More...')
+    $toolsItem.Add_Click({
+        $script:CurrentMenuPage = 'Tools'
+        Build-LeftMenu
+        $menuOwner.Show()
+        [void][TrayFocus]::SetForegroundWindow($menuOwner.Handle)
+        $leftMenu.Show($menuOwner, $menuOwner.PointToClient([System.Windows.Forms.Cursor]::Position))
+    })
+    $null = $leftMenu.Items.Add($toolsItem)
 
 }
 
