@@ -15,6 +15,36 @@
             - Run from within the NextBootTray repository
 #>
 
+param(
+    [switch]$ElevatedChild
+)
+
+function Test-IsElevated {
+    try {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    }
+    catch {
+        return $false
+    }
+}
+
+if (-not (Test-IsElevated) -and -not $ElevatedChild) {
+    $selfPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $selfPath, '-ElevatedChild')
+
+    try {
+        Start-Process -FilePath 'pwsh.exe' -Verb RunAs -ArgumentList $argList -Wait
+        exit 0
+    }
+    catch {
+        Write-Warning 'Installer requires elevation to register NextBootTray-LogonElevated.'
+        Write-Warning ("Elevation failed or was cancelled: {0}" -f $_.Exception.Message)
+        exit 1
+    }
+}
+
 $RepoRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Path $MyInvocation.MyCommand.Path -Parent }
 $Target   = "D:\OneDrive\cmd"
 Write-Host "Installing NextBootTray v3.0.0..."
