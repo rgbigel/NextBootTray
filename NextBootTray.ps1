@@ -1,5 +1,5 @@
 <#
-    NextBootTray.ps1 v2.0.0
+    NextBootTray.ps1 v2.0.1
 
     PURPOSE:
       - Provide a tray icon for quick boot-target actions.
@@ -238,7 +238,7 @@ function Classify-BcdSection {
 
     # Detection rules intentionally broad to survive localization.
     $isWinload = $text -match '(?i)\\windows\\system32\\winload\.(efi|exe)'
-    # Scope exclusion check to the description only — full-text matching would catch
+    # Scope exclusion check to the description only ? full-text matching would catch
     # 'recoverysequence' properties present in every normal Windows boot entry.
     # 'boot\s+manager' is checked as a phrase to avoid matching "rEFInd Boot Manager".
     $isExcluded = ($description -and $description -match '(?i)\b(recovery|wiederherstellung|resume|setup)\b') -or

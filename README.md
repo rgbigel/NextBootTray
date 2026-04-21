@@ -1,4 +1,4 @@
-# NextBootTray Version 2.0.0
+# NextBootTray Version 2.0.1
 
 NextBootTray provides tray-based boot target control for Windows.
 
