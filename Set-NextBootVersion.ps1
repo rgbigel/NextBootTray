@@ -11,8 +11,15 @@
 param(
     [Parameter(Mandatory = $false)]
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version
+    [string]$Version,
+    [Alias("h","?")]
+    [switch]$HelpMode
 )
+
+if ($HelpMode) {
+    Get-Help $PSCommandPath -Full
+    exit 0
+}
 
 $RepoRoot = Split-Path -Parent $PSCommandPath
 $VersionFile = Join-Path $RepoRoot 'VERSION.txt'

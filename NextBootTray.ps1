@@ -10,12 +10,20 @@
 #      2.0.0  - Left/right click split menus and robust BCD classification baseline.
 # =================================================================================================
 
+[CmdletBinding()]
 param(
     [switch]$D,
     [switch]$Stop,
     [switch]$Detach,
-    [switch]$DetachedChild
+    [switch]$DetachedChild,
+    [Alias("h","?")]
+    [switch]$HelpMode
 )
+
+if ($HelpMode) {
+    Get-Help $PSCommandPath -Full
+    exit 0
+}
 
 # ---------------------------------------------------------------
 # Logging helpers and process state snapshot

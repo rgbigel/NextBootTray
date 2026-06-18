@@ -8,10 +8,18 @@
 #      2.0.0  - One-shot boot sequence action.
 # =================================================================================================
 
+[CmdletBinding()]
 param(
     [string]$Id,
-    [string]$Uri
+    [string]$Uri,
+    [Alias("h","?")]
+    [switch]$HelpMode
 )
+
+if ($HelpMode) {
+    Get-Help $PSCommandPath -Full
+    exit 0
+}
 
 $script:LogFile = Join-Path -Path $PSScriptRoot -ChildPath 'NextBootTray-Action.log'
 $script:HibernateStatePath = Join-Path -Path $PSScriptRoot -ChildPath 'NextBootTray-HibernateState.json'

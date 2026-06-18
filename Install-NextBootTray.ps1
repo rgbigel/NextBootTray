@@ -15,9 +15,17 @@
             - Run from within the NextBootTray repository
 #>
 
+[CmdletBinding()]
 param(
-    [switch]$ElevatedChild
+    [switch]$ElevatedChild,
+    [Alias("h","?")]
+    [switch]$HelpMode
 )
+
+if ($HelpMode) {
+    Get-Help $PSCommandPath -Full
+    exit 0
+}
 
 function Test-IsElevated {
     try {
